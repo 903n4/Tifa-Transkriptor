@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tifa Transkriptor</title>
+    <!-- Memuat Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #0d1117; /* Warna latar belakang gelap */
+        }
+        .container-card {
+            max-width: 800px;
+        }
+        /* Style untuk tombol loading */
+        .spinner {
+            border: 4px solid rgba(255, 255, 255, 0.3);
+            border-radius: 50%;
+            border-top: 4px solid #ffffff;
+            width: 16px;
+            height: 16px;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body class="p-4 flex items-center justify-center min-h-screen">
+
+    <div id="app" class="container-card w-full bg-[#161b22] p-8 rounded-xl shadow-2xl">
+        <h1 class="text-3xl font-bold text-white mb-2 text-center">
+            Tifa Transkriptor
+        </h1>
+        <!-- Tagline Baru -->
+        <p class="text-gray-500 mb-6 text-center text-sm italic">
+            Dibuat oleh Guntur Oijaitou
+        </p>
+        
+        <p class="text-gray-400 mb-8 text-center">
+            Unggah file audio Anda (MP3, WAV, dll.) untuk mendapatkan transkripsi teks instan.
+        </p>
+
+        <!-- Bagian Unggah Audio -->
+        <div class="mb-6">
+            <label for="audioFile" class="block text-sm font-medium text-gray-300 mb-2">
+                Pilih File Audio (Maksimum 20 MB)
+            </label>
+            <input type="file" id="audioFile" accept="audio/*" class="w-full text-sm text-gray-400
+                file:mr-4 file:py-2 file:px-4
+                file:rounded-lg file:border-0
+                file:text-sm file:font-semibold
+                file:bg-[#30363d] file:text-white
+                hover:file:bg-[#404a55]
+                transition duration-150 ease-in-out
+            ">
+            <p id="fileError" class="mt-2 text-sm text-red-400 hidden">Ukuran file melebihi batas 20MB.</p>
+        </div>
+
+        <!-- Tombol Transkripsi -->
+        <div class="flex justify-center mb-8">
+            <button id="transcribeButton"
+                class="bg-[#2ea44f] text-white font-semibold py-3 px-8 rounded-lg shadow-md
+                       hover:bg-[#2c974b] transition duration-200 ease-in-out
+                       focus:outline-none focus:ring-4 focus:ring-[#2ea44f]/50
+                       disabled:bg-gray-500 disabled:cursor-not-allowed
+                       flex items-center justify-center"
+                disabled>
+                <span id="buttonText">Transkripsikan Audio</span>
+                <div id="loadingSpinner" class="spinner ml-3 hidden"></div>
+            </button>
+        </div>
+
+        <!-- Area Hasil Transkripsi -->
+        <div id="resultArea" class="mt-8">
+            <h2 class="text-xl font-semibold text-white mb-3">Hasil Transkripsi (Format dengan Pembicara & Waktu):</h2>
+            <textarea id="transcriptionText"
+                class="w-full h-64 p-4 text-gray-200 bg-[#21262d] border border-[#30363d] rounded-lg
+                       focus:border-[#58a6ff] focus:ring-1 focus:ring-[#58a6ff] resize-none"
+                placeholder="Transkripsi akan muncul di sini..."
+                readonly></textarea>
+
+            <button id="copyButton"
+                class="mt-3 bg-[#58a6ff] text-white text-sm font-medium py-2 px-4 rounded-lg
+                       hover:bg-[#4895ee] transition duration-150 ease-in-out hidden">
+                Salin Teks
+            </button>
+            <p id="copyMessage" class="mt-2 text-sm text-[#2ea44f] hidden">Tersalin!</p>
+        </div>
+
+        <!-- Pesan Status/Error -->
+        <div id="statusMessage" class="mt-4 p-3 rounded-lg text-center hidden"></div>
+    </div>
+
+    <script type="module">
+        // Global variables for Firebase access (required by the Canvas environment)
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const apiKey = ""; // API Key is provided by the environment
+
+        // Define the API URL for the Gemini model
+        const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+
+        // DOM Elements
+        const audioFileInput = document.getElementById('audioFile');
+        const transcribeButton = document.getElementById('transcribeButton');
+        const loadingSpinner = document.getElementById('loadingSpinner');
+        const buttonText = document.getElementById('buttonText');
+        const transcriptionTextarea = document.getElementById('transcriptionText');
+        const statusMessage = document.getElementById('statusMessage');
+        const fileError = document.getElementById('fileError');
+        const copyButton = document.getElementById('copyButton');
+        const copyMessage = document.getElementById('copyMessage');
+
+        let audioBase64 = null;
+        let mimeType = null;
+        const MAX_FILE_SIZE_MB = 20; // BATAS MAKSIMUM FILE DIUBAH MENJADI 20 MB
+
+        // --- File Handling Functions ---
+
+        /**
+         * Mengubah file yang diunggah menjadi string Base64.
+         * @param {File} file - File yang diunggah.
+         * @returns {Promise<string>} Base64 data string.
+         */
+        function fileToBase64(file) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.readAsDataURL(file);
+                reader.onload = () => {
+                    // Extract only the Base64 part (after the comma)
+                    const base64String = reader.result.split(',')[1];
+                    resolve(base64String);
+                };
+                reader.onerror = (error) => reject(error);
+            });
+        }
+
+        /**
+         * Listener untuk input file. Memuat file dan mengaktifkan tombol.
+         */
+        audioFileInput.addEventListener('change', async (event) => {
+            transcriptionTextarea.value = '';
+            statusMessage.classList.add('hidden');
+            copyButton.classList.add('hidden');
+            copyMessage.classList.add('hidden');
+            audioBase64 = null;
+            mimeType = null;
+
+            const file = event.target.files[0];
+            if (!file) {
+                transcribeButton.disabled = true;
+                return;
+            }
+
+            // Periksa ukuran file
+            if (file.size > MAX_FILE_SIZE_MB * 1024 * 1024) {
+                fileError.classList.remove('hidden');
+                transcribeButton.disabled = true;
+                return;
+            } else {
+                fileError.classList.add('hidden');
+            }
+
+            try {
+                // Tampilkan loading saat memproses file
+                transcribeButton.disabled = true;
+                buttonText.textContent = 'Memproses File...';
+                loadingSpinner.classList.remove('hidden');
+
+                audioBase64 = await fileToBase64(file);
+                mimeType = file.type;
+
+                transcribeButton.disabled = false;
+                buttonText.textContent = 'Transkripsikan Audio';
+            } catch (error) {
+                console.error('Error reading file:', error);
+                showStatus('Gagal memproses file.', 'bg-red-900 text-red-300');
+                transcribeButton.disabled = true;
+            } finally {
+                loadingSpinner.classList.add('hidden');
+            }
+        });
+
+        // --- UI Utility Functions ---
+
+        /**
+         * Menampilkan pesan status di UI.
+         * @param {string} message - Pesan yang akan ditampilkan.
+         * @param {string} className - Kelas Tailwind untuk styling (mis. warna).
+         */
+        function showStatus(message, className) {
+            statusMessage.textContent = message;
+            statusMessage.className = `mt-4 p-3 rounded-lg text-center ${className}`;
+            statusMessage.classList.remove('hidden');
+        }
+
+        /**
+         * Mengatur status loading tombol transkripsi.
+         * @param {boolean} isLoading - Apakah status loading aktif.
+         */
+        function setTranscriptionLoading(isLoading) {
+            transcribeButton.disabled = isLoading || !audioBase64;
+            loadingSpinner.classList.toggle('hidden', !isLoading);
+            buttonText.textContent = isLoading ? 'Mentranskripsi...' : 'Transkripsikan Audio';
+        }
+
+        // --- API Call and Transcription Logic ---
+
+        /**
+         * Melakukan panggilan API untuk transkripsi audio.
+         */
+        async function handleTranscription() {
+            if (!audioBase64 || !mimeType) {
+                showStatus('Silakan unggah file audio terlebih dahulu.', 'bg-yellow-900 text-yellow-300');
+                return;
+            }
+
+            setTranscriptionLoading(true);
+            transcriptionTextarea.value = '';
+            statusMessage.classList.add('hidden');
+            copyButton.classList.add('hidden');
+            copyMessage.classList.add('hidden');
+
+            // PROMPT YANG DITINGKATKAN: Menekankan keakuratan, kelengkapan, dan dukungan multibahasa.
+            const systemPrompt = "Anda adalah AI transkripsi tingkat expert. Prioritas utama Anda adalah keakuratan dan kelengkapan teks, terlepas dari bahasa yang digunakan dalam audio (Indonesia, Inggris, atau lainnya). Tugas Anda adalah mengekstrak teks lengkap, mengatur transkrip dalam bentuk paragraf, MENGIDENTIFIKASI setiap pembicara, dan secara KETAT menambahkan cap waktu (timestamp) di sebelah nama pembicara SETIAP KALI ada pergantian pembicara baru. Format output HARUS berupa: [Waktu] Nama Pembicara: [Teks Transkripsi]. JANGAN tambahkan pengantar, judul, atau komentar. Pertahankan keakuratan maksimal.";
+            const userQuery = "Transkripsikan audio terlampir dengan format identifikasi pembicara dan cap waktu sesuai instruksi sistem.";
+
+            const payload = {
+                contents: [{
+                    role: "user",
+                    parts: [
+                        { text: userQuery },
+                        {
+                            inlineData: {
+                                mimeType: mimeType,
+                                data: audioBase64
+                            }
+                        }
+                    ]
+                }],
+                systemInstruction: {
+                    parts: [{ text: systemPrompt }]
+                }
+            };
+
+            // Implementasi exponential backoff
+            const maxRetries = 3;
+            let attempt = 0;
+            let response = null;
+
+            while (attempt < maxRetries) {
+                try {
+                    response = await fetch(apiUrl, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+
+                    if (response.ok) {
+                        break; // Sukses, keluar dari loop
+                    }
+
+                    // Logika retry untuk status non-OK
+                    attempt++;
+                    if (attempt < maxRetries) {
+                        const delay = Math.pow(2, attempt) * 1000 + Math.random() * 1000;
+                        await new Promise(resolve => setTimeout(resolve, delay));
+                    }
+                } catch (error) {
+                    console.error('Fetch attempt failed:', error);
+                    attempt++;
+                    if (attempt < maxRetries) {
+                        const delay = Math.pow(2, attempt) * 1000 + Math.random() * 1000;
+                        await new Promise(resolve => setTimeout(resolve, delay));
+                    }
+                }
+            }
+
+            setTranscriptionLoading(false);
+
+            if (!response || !response.ok) {
+                showStatus('Gagal mendapatkan transkripsi. Silakan coba lagi nanti. (Error API: ' + (response ? response.status : 'Jaringan') + ')', 'bg-red-900 text-red-300');
+                return;
+            }
+
+            try {
+                const result = await response.json();
+                const text = result.candidates?.[0]?.content?.parts?.[0]?.text;
+
+                if (text) {
+                    transcriptionTextarea.value = text.trim();
+                    showStatus('Transkripsi berhasil dibuat.', 'bg-green-900 text-green-300');
+                    copyButton.classList.remove('hidden');
+                } else {
+                    showStatus('API mengembalikan hasil kosong. Coba gunakan file audio yang berbeda.', 'bg-yellow-900 text-yellow-300');
+                }
+            } catch (error) {
+                console.error('Error parsing JSON response:', error);
+                showStatus('Terjadi kesalahan dalam memproses respons AI.', 'bg-red-900 text-red-300');
+            }
+        }
+
+        // --- Copy Functionality ---
+        copyButton.addEventListener('click', () => {
+            transcriptionTextarea.select();
+            transcriptionTextarea.setSelectionRange(0, 99999); // Untuk perangkat seluler
+
+            try {
+                // Menggunakan execCommand karena navigator.clipboard mungkin tidak berfungsi dalam iframe
+                document.execCommand('copy');
+                copyMessage.classList.remove('hidden');
+                setTimeout(() => {
+                    copyMessage.classList.add('hidden');
+                }, 2000);
+            } catch (err) {
+                console.error('Gagal menyalin teks', err);
+                showStatus('Gagal menyalin teks ke clipboard.', 'bg-red-900 text-red-300');
+            }
+        });
+
+        // --- Event Listener Utama ---
+        transcribeButton.addEventListener('click', handleTranscription);
+
+    </script>
+</body>
+</html>
